@@ -9,7 +9,7 @@
         "mqtt",
         "iot"
     ],
-    "homepage": "https://github.com/net-os/laravel-emqx",
+    "homepage": "https://github.com/net-os-com/laravel-emqx",
     "license": "MIT",
     "authors": [
         {
