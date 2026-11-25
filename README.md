@@ -84,7 +84,8 @@ if ($this->mqtt->isEnabled()) {
 - **The payload** is sent as-is if it is a string. A `Jsonable` (spatie/laravel-data objects, Eloquent models) is
   sent as its `toJson()`. Arrays and `JsonSerializable` objects are JSON encoded.
 - **Delivery.** All topics go over one connection. The publisher waits up to `MQTT_TIMEOUT` seconds for the broker's
-  acknowledgments and always disconnects. Failures throw an `MqttPublishException`.
+  acknowledgments and always disconnects. A failed connection, a failed publish and a message that was not
+  acknowledged in time all throw an `MqttPublishException`, so a queued job can retry.
 
 ## Credentials
 
@@ -113,7 +114,9 @@ API errors throw a subclass of `NetOs\Emqx\Exceptions\EmqxException`:
 | `ServerException` | 5xx |
 | `MissingConfigurationException` | `EMQX_API_URL`, `EMQX_API_KEY` or `EMQX_API_SECRET` is missing |
 
-Connection failures, 429 and 5xx are retried up to `EMQX_API_RETRY_TIMES` times, honoring `Retry-After`. An exception
+Connection failures, 429 and 5xx are retried up to `EMQX_API_RETRY_TIMES` times, honoring `Retry-After` up to 10
+seconds. A longer `Retry-After` throws the `RateLimitException` at once, so a queued job can release itself. A `POST`
+is never retried, because a first attempt that did succeed would make the retry fail on the resource it created. An exception
 carries the HTTP status, the EMQX error code and the URL. It never carries the request body or the API secret, and any
 password that EMQX echoes back in an error message is redacted.
 
@@ -149,7 +152,8 @@ $emqx->passwordFor('abc'); // compare with the password the app handed to the de
 $emqx->assertUserDeleted('abc');
 ```
 
-Both fakes replace the contract in the container, so injected dependencies receive the fake too.
+Both fakes replace the contract in the container, so injected dependencies receive the fake too. Like the real
+publisher, `Mqtt::fake()` throws an `UnsafeTopicException` for a topic outside `emqx.mqtt.topic_prefix`.
 
 ## License
 

@@ -7,6 +7,7 @@ namespace NetOs\Emqx\Testing;
 use Illuminate\Contracts\Support\Jsonable;
 use JsonSerializable;
 use NetOs\Emqx\Contracts\MqttPublisher;
+use NetOs\Emqx\Exceptions\UnsafeTopicException;
 use PHPUnit\Framework\Assert;
 
 final class FakeMqttPublisher implements MqttPublisher
@@ -14,12 +15,27 @@ final class FakeMqttPublisher implements MqttPublisher
     /** @var list<array{topic: string, payload: string|array<array-key, mixed>|Jsonable|JsonSerializable}> */
     private array $published = [];
 
-    public function __construct(private bool $enabled = true) {}
+    public function __construct(
+        private bool $enabled = true,
+        private ?string $topicPrefix = null,
+    ) {}
 
     public function publish(iterable $topics, string|array|Jsonable|JsonSerializable $payload): void
     {
         if (! $this->enabled) {
             return;
+        }
+
+        $topics = is_array($topics) ? array_values($topics) : iterator_to_array($topics, false);
+
+        if ($this->topicPrefix !== null) {
+            $prefix = rtrim($this->topicPrefix, '/').'/';
+
+            foreach ($topics as $topic) {
+                if (! str_starts_with($topic, $prefix)) {
+                    throw UnsafeTopicException::outsidePrefix($topic, $prefix);
+                }
+            }
         }
 
         foreach ($topics as $topic) {

@@ -22,7 +22,7 @@ final readonly class TopicGuard
 
         $pinned = $this->settings->environmentTopicPrefixes[$this->environment] ?? null;
 
-        return $pinned === null || $pinned === $this->settings->topicPrefix;
+        return $pinned === null || rtrim($pinned, '/') === rtrim($this->settings->topicPrefix, '/');
     }
 
     /**

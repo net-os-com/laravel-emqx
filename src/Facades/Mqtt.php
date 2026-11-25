@@ -18,9 +18,14 @@ class Mqtt extends Facade
 {
     protected static $cached = false;
 
+    /**
+     * The fake refuses topics outside the configured prefix, like the real publisher.
+     */
     public static function fake(bool $enabled = true): FakeMqttPublisher
     {
-        $fake = new FakeMqttPublisher($enabled);
+        $prefix = config('emqx.mqtt.topic_prefix');
+
+        $fake = new FakeMqttPublisher($enabled, is_string($prefix) && trim($prefix) !== '' ? $prefix : null);
 
         static::swap($fake);
 

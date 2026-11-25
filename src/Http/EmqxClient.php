@@ -24,6 +24,8 @@ use Throwable;
 
 final readonly class EmqxClient
 {
+    private const int MAX_RETRY_AFTER_SECONDS = 10;
+
     public function __construct(
         private Factory $http,
         private ?string $baseUrl,
@@ -50,7 +52,8 @@ final readonly class EmqxClient
         $url = rtrim((string) $this->baseUrl, '/').'/'.ltrim($path, '/');
 
         try {
-            $response = $this->request()->send(strtoupper($method), $url, $body === null ? [] : ['json' => $body]);
+            $method = strtoupper($method);
+            $response = $this->request($method)->send($method, $url, $body === null ? [] : ['json' => $body]);
         } catch (ConnectionException $exception) {
             throw new EmqxException("Could not reach the EMQX API at [{$url}].", url: $url, previous: $exception);
         }
@@ -78,14 +81,15 @@ final readonly class EmqxClient
         ];
     }
 
-    private function request(): PendingRequest
+    private function request(string $method): PendingRequest
     {
         $request = $this->http
             ->withBasicAuth((string) $this->key, (string) $this->secret)
             ->acceptJson()
             ->timeout($this->timeout);
 
-        if ($this->retryTimes > 1) {
+        // A retried POST whose first attempt did succeed would fail on the resource it created.
+        if ($this->retryTimes > 1 && $method !== 'POST') {
             $request = $request->retry(
                 $this->retryTimes,
                 $this->retryDelay(...),
@@ -117,6 +121,11 @@ final readonly class EmqxClient
         }
 
         $status = $exception->response->status();
+        $retryAfter = $exception->response->header('Retry-After');
+
+        if (is_numeric($retryAfter) && (float) $retryAfter > self::MAX_RETRY_AFTER_SECONDS) {
+            return false;
+        }
 
         return $status === 429 || $status >= 500;
     }
@@ -130,7 +139,7 @@ final readonly class EmqxClient
         $body = is_array($decoded) ? $decoded : [];
         $status = $response->status();
         $code = is_string($body['code'] ?? null) ? $body['code'] : null;
-        $message = $this->redact($this->messageFor($response, $body), $sensitive);
+        $message = Str::limit($this->redact($this->messageFor($response, $body), $sensitive), 500);
 
         if ($status === 429) {
             $retryAfter = $response->header('Retry-After');
@@ -160,7 +169,7 @@ final readonly class EmqxClient
             $value = $body[$key] ?? null;
 
             if (is_string($value) && $value !== '') {
-                return Str::limit($value, 500);
+                return $value;
             }
         }
 
@@ -172,8 +181,21 @@ final readonly class EmqxClient
      */
     private function redact(string $message, array $sensitive): string
     {
-        $sensitive = array_filter($sensitive, fn (string $value): bool => $value !== '');
+        $variants = [];
 
-        return $sensitive === [] ? $message : str_replace($sensitive, '[redacted]', $message);
+        foreach ($sensitive as $value) {
+            if ($value === '') {
+                continue;
+            }
+
+            $variants[] = $value;
+            $variants[] = substr(json_encode($value, JSON_THROW_ON_ERROR), 1, -1);
+            $variants[] = substr(json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 1, -1);
+        }
+
+        $variants = array_unique($variants);
+        usort($variants, fn (string $a, string $b): int => strlen($b) <=> strlen($a));
+
+        return $variants === [] ? $message : str_replace($variants, '[redacted]', $message);
     }
 }

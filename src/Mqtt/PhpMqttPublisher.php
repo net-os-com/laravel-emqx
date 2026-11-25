@@ -8,8 +8,10 @@ use Illuminate\Contracts\Support\Jsonable;
 use JsonSerializable;
 use NetOs\Emqx\Contracts\MqttPublisher;
 use NetOs\Emqx\Exceptions\MqttPublishException;
+use PhpMqtt\Client\Contracts\MqttClient as MqttClientContract;
 use PhpMqtt\Client\Exceptions\MqttClientException;
 use PhpMqtt\Client\MqttClient;
+use PhpMqtt\Client\Repositories\MemoryRepository;
 
 final readonly class PhpMqttPublisher implements MqttPublisher
 {
@@ -32,9 +34,10 @@ final readonly class PhpMqttPublisher implements MqttPublisher
         $this->guard->assertTlsAllowed();
 
         $message = $this->encoder->encode($payload);
+        $pending = new MemoryRepository;
 
         try {
-            $client = $this->clients->connect($this->settings);
+            $client = $this->clients->connect($this->settings, $pending);
         } catch (MqttClientException $exception) {
             throw MqttPublishException::couldNotConnect($this->settings, $exception);
         }
@@ -48,12 +51,27 @@ final readonly class PhpMqttPublisher implements MqttPublisher
         } catch (MqttClientException $exception) {
             throw MqttPublishException::couldNotPublish($this->settings, $exception);
         } finally {
-            $client->disconnect();
+            $this->disconnect($client);
+        }
+
+        $unacknowledged = $pending->countPendingOutgoingMessages();
+
+        if ($unacknowledged > 0) {
+            throw MqttPublishException::notAcknowledged($this->settings, $unacknowledged);
         }
     }
 
     public function isEnabled(): bool
     {
         return $this->guard->allowsPublishing();
+    }
+
+    private function disconnect(MqttClientContract $client): void
+    {
+        try {
+            $client->disconnect();
+        } catch (MqttClientException) {
+            return;
+        }
     }
 }

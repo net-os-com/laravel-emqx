@@ -154,3 +154,53 @@ it('wraps connection failures', function () {
 it('hides the secret when dumped', function () {
     expect(print_r(app(EmqxClient::class), true))->not->toContain('app-secret');
 });
+
+it('redacts a password that the 500 character limit would otherwise cut in half', function () {
+    $password = str_repeat('p', 40);
+    Http::fake(['*' => Http::response(['code' => 'BAD_REQUEST', 'message' => str_repeat('x', 480).$password], 400)]);
+
+    try {
+        app(EmqxClient::class)->call('PUT', 'some/path', ['password' => $password], [$password]);
+        $this->fail('No exception was thrown.');
+    } catch (ValidationException $exception) {
+        expect($exception->getMessage())->toBe(str_repeat('x', 480).'[redacted]')
+            ->and($exception->getMessage())->not->toContain('pppp');
+    }
+});
+
+it('redacts a password that EMQX echoes in JSON-escaped form', function () {
+    $password = 'a"b\\c/d';
+    Http::fake(['*' => Http::response([
+        'code' => 'BAD_REQUEST',
+        'message' => json_encode(['value' => $password]).' '.json_encode(['value' => $password], JSON_UNESCAPED_SLASHES),
+    ], 400)]);
+
+    try {
+        app(EmqxClient::class)->call('PUT', 'some/path', ['password' => $password], [$password]);
+        $this->fail('No exception was thrown.');
+    } catch (ValidationException $exception) {
+        expect($exception->getMessage())->toBe('{"value":"[redacted]"} {"value":"[redacted]"}');
+    }
+});
+
+it('does not retry a POST, which may have succeeded already', function (int $status) {
+    Http::fake(['*' => Http::response(['code' => 'INTERNAL_ERROR'], $status)]);
+
+    expect(fn () => app(EmqxClient::class)->call('POST', 'some/path', ['user_id' => 'abc']))->toThrow(EmqxException::class);
+
+    Http::assertSentCount(1);
+})->with([429, 500]);
+
+it('does not wait for a Retry-After above 10 seconds', function () {
+    Http::fake(['*' => Http::response(['code' => 'TOO_MANY_REQUESTS', 'message' => 'Slow down'], 429, ['Retry-After' => '600'])]);
+
+    try {
+        app(EmqxClient::class)->call('GET', 'some/path');
+        $this->fail('No exception was thrown.');
+    } catch (RateLimitException $exception) {
+        expect($exception->retryAfter())->toBe(600);
+    }
+
+    Http::assertSentCount(1);
+    Sleep::assertNeverSlept();
+});

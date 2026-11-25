@@ -19,4 +19,9 @@ class MqttPublishException extends RuntimeException
     {
         return new self("Could not publish to the MQTT broker at [{$settings->host}:{$settings->port}].", previous: $previous);
     }
+
+    public static function notAcknowledged(MqttSettings $settings, int $count): self
+    {
+        return new self("The MQTT broker at [{$settings->host}:{$settings->port}] did not acknowledge {$count} message(s) in time.");
+    }
 }

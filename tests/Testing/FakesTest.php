@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use NetOs\Emqx\Contracts\MqttCredentialProvisioner;
 use NetOs\Emqx\Contracts\MqttPublisher;
+use NetOs\Emqx\Exceptions\UnsafeTopicException;
 use NetOs\Emqx\Facades\Emqx;
 use NetOs\Emqx\Facades\Mqtt;
 use PHPUnit\Framework\AssertionFailedError;
@@ -63,4 +64,17 @@ it('swaps the provisioner for a fake that records credentials', function () {
 
     expect($fake->passwordFor('abc'))->toBeNull()
         ->and($fake->aclFor('abc'))->toBeNull();
+});
+
+it('refuses topics outside the configured prefix, like the real publisher', function () {
+    config(['emqx.mqtt.topic_prefix' => 'acc/netlink/v1']);
+    $fake = Mqtt::fake();
+
+    Mqtt::publish(['acc/netlink/v1/a/x'], 'hello');
+
+    expect(fn () => Mqtt::publish(['production/netlink/v1/a/x'], 'hello'))
+        ->toThrow(UnsafeTopicException::class, 'The MQTT topic [production/netlink/v1/a/x] is outside the configured prefix [acc/netlink/v1/].');
+
+    $fake->assertPublishedTimes('acc/netlink/v1/a/x', 1);
+    $fake->assertNotPublished('production/netlink/v1/a/x');
 });

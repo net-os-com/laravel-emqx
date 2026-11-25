@@ -2,6 +2,9 @@
 
 declare(strict_types=1);
 
+namespace NetOs\Emqx\Tests\Mqtt;
+
+use Mockery;
 use Mockery\MockInterface;
 use NetOs\Emqx\Contracts\MqttPublisher;
 use NetOs\Emqx\Exceptions\InsecureConnectionException;
@@ -10,8 +13,10 @@ use NetOs\Emqx\Exceptions\UnsafeTopicException;
 use NetOs\Emqx\Mqtt\MqttClientFactory;
 use NetOs\Emqx\Mqtt\MqttSettings;
 use PhpMqtt\Client\Contracts\MqttClient;
+use PhpMqtt\Client\Contracts\Repository;
 use PhpMqtt\Client\Exceptions\ConnectingToBrokerFailedException;
 use PhpMqtt\Client\Exceptions\DataTransferException;
+use PhpMqtt\Client\PublishedMessage;
 
 beforeEach(function () {
     config([
@@ -153,3 +158,49 @@ it('hides the password when dumped', function () {
     expect(print_r($settings, true))->not->toContain('broker-secret')
         ->and($settings->password())->toBe('broker-secret');
 });
+
+it('keeps the publish error when disconnecting fails too', function () {
+    $client = mqttClient();
+    $client->allows('publish')->andThrow(new DataTransferException(DataTransferException::EXCEPTION_TX_DATA, 'broken pipe'));
+    $client->allows('disconnect')->andThrow(new DataTransferException(DataTransferException::EXCEPTION_TX_DATA, 'broken pipe'));
+
+    expect(fn () => publisher()->publish(['acc/netlink/v1/a/x'], 'hello'))
+        ->toThrow(MqttPublishException::class, 'Could not publish to the MQTT broker at [broker.example.com:8883].');
+});
+
+it('ignores a failed disconnect after a successful publish', function () {
+    $client = mqttClient();
+    $client->expects('publish')->once();
+    $client->expects('loop')->once();
+    $client->allows('disconnect')->andThrow(new DataTransferException(DataTransferException::EXCEPTION_TX_DATA, 'broken pipe'));
+
+    publisher()->publish(['acc/netlink/v1/a/x'], 'hello');
+});
+
+it('fails when the broker did not acknowledge every message in time', function () {
+    $client = Mockery::mock(MqttClient::class);
+    $client->allows(['publish' => null, 'loop' => null]);
+    $client->expects('disconnect')->once();
+    $factory = Mockery::mock(MqttClientFactory::class);
+    $factory->allows('connect')->andReturnUsing(function (MqttSettings $settings, Repository $repository) use ($client): MqttClient {
+        $repository->addPendingOutgoingMessage(new PublishedMessage(1, 'acc/netlink/v1/a/x', 'hello', 1, false));
+
+        return $client;
+    });
+    app()->instance(MqttClientFactory::class, $factory);
+
+    expect(fn () => publisher()->publish(['acc/netlink/v1/a/x'], 'hello'))
+        ->toThrow(MqttPublishException::class, 'The MQTT broker at [broker.example.com:8883] did not acknowledge 1 message(s) in time.');
+});
+
+it('ignores a trailing slash when comparing the pinned prefix', function (string $pinned, string $configured) {
+    config([
+        'emqx.mqtt.environment_topic_prefixes' => ['testing' => $pinned],
+        'emqx.mqtt.topic_prefix' => $configured,
+    ]);
+
+    expect(publisher()->isEnabled())->toBeTrue();
+})->with([
+    ['test/netlink/v1', 'test/netlink/v1/'],
+    ['test/netlink/v1/', 'test/netlink/v1'],
+]);
